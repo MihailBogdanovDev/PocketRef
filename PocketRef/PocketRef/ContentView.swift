@@ -2,10 +2,11 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        ZStack {
-            CameraView()
-                .edgesIgnoringSafeArea(.all)
-        }
+        GameStartView() // Use GameStartView directly
+        //CameraView()
     }
 }
 
+#Preview {
+    ContentView()
+}

@@ -14,6 +14,7 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         super.viewDidLoad()
         setupModel()
         setupCamera()
+        
     }
 
     // MARK: - Setup Core ML Model
@@ -60,10 +61,10 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             connection.isVideoMirrored = false
         }
 
-        previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
+       /* previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
         previewLayer.videoGravity = .resizeAspect
         previewLayer.frame = view.bounds
-        view.layer.addSublayer(previewLayer)
+        view.layer.addSublayer(previewLayer)*/
 
         DispatchQueue.global(qos: .userInitiated).async {
             self.captureSession.startRunning()
@@ -113,18 +114,21 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
     // MARK: - Handle Detections
     private func handleDetections(_ detections: [VNRecognizedObjectObservation]) {
         DispatchQueue.main.async {
-            // Clear old bounding boxes
-            self.view.layer.sublayers?.removeSubrange(1...)
+            print("Detections count: \(detections.count)") // Debug log
+            self.view.layer.sublayers?.removeSubrange(1...) // Remove old bounding boxes
 
-            // Draw bounding boxes for all detections
             for detection in detections {
                 let boundingBox = detection.boundingBox
-                let box = self.createBoundingBox(from: boundingBox)
-                self.view.layer.addSublayer(box)
+                let screenPoint = CGPoint(
+                    x: (boundingBox.origin.x + boundingBox.width / 2) * self.view.bounds.width,
+                    y: (1 - (boundingBox.origin.y + boundingBox.height / 2)) * self.view.bounds.height
+                )
+                print("Detected ball at screen point: \(screenPoint)") // Debug log
+                self.view.layer.addSublayer(self.createBoundingBox(from: boundingBox)) // Add bounding box
+                //self.delegate?.didDetectBall(at: screenPoint) // Notify delegate
             }
         }
     }
-
     // MARK: - Create Bounding Box
     private func createBoundingBox(from rect: CGRect) -> CAShapeLayer {
         let layer = CAShapeLayer()
