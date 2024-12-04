@@ -2,9 +2,21 @@ import UIKit
 import ARKit
 import Vision
 
+// Define a struct to represent the goal zone
+struct GoalZone {
+    var start: SCNVector3
+    var end: SCNVector3
+    var width: Float  // Depth of the goal zone
+    var corners: [SCNVector3]  // To store the corners of the goal zone for visualization
+}
+
+
 class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDelegate {
     private var sceneView: ARSCNView!
     private var goalLines: [(start: SCNVector3, end: SCNVector3)] = []
+    private var goalZones: [GoalZone] = []  // Array to hold goal zones
+
+
     
     //Scoring
     private var scoreLabel: UILabel!
@@ -12,6 +24,9 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
     private var teamScores: [Int] = [0, 0] // Two teams max
     private var isGameActive: Bool = false // Track if the game is active
     private var currentTeams: Int = 0 // Number of active teams (1 or 2)
+    private var isBallInGoalZone: [Bool] = [false, false]  // Assuming there are two goal zones
+    private var lastScoreTime: Date?  // Time of the last score
+
 
 
     // Core ML Model
@@ -216,7 +231,7 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
                 // Set the second point, finalize the goal line, and reset
                 let secondPoint = position
                 print("Second point set at: \(secondPoint)")
-                addGoalLine(start: firstPoint!, end: secondPoint)
+                addGoalLineAndZone(from: firstPoint!, to: secondPoint)
                 firstPoint = nil
                 removePreviewLine()
                 removePreviewSphere()
@@ -225,31 +240,74 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
             print("No hit test result for goal line placement")
         }
     }
-
-
-    private func addGoalLine(start: SCNVector3, end: SCNVector3) {
-        // Create a line geometry between two points
-        let lineGeometry = createLineGeometry(start: start, end: end)
+    private func addGoalLineAndZone(from start: SCNVector3, to end: SCNVector3) {
+        // Create the line node and add it to the scene
+        let lineGeometry = createLineGeometry(from: start, to: end)
         let lineNode = SCNNode(geometry: lineGeometry)
         lineNode.geometry?.firstMaterial?.diffuse.contents = UIColor.green
         sceneView.scene.rootNode.addChildNode(lineNode)
+        goalLines.append((start, end))
 
-        goalLines.append((start: start, end: end))
-    }
-    
-    private func createLineGeometry(start: SCNVector3, end: SCNVector3) -> SCNGeometry {
-        let vertices: [SCNVector3] = [start, end]
-        let vertexSource = SCNGeometrySource(vertices: vertices)
-        
-        let indices: [UInt16] = [0, 1] // Connect the two points
-        let indexData = Data(bytes: indices, count: MemoryLayout<UInt16>.size * indices.count)
-        let element = SCNGeometryElement(data: indexData,
-                                         primitiveType: .line,
-                                         primitiveCount: 1,
-                                         bytesPerIndex: MemoryLayout<UInt16>.size)
+        // Define the width (depth) of the goal zone
+        let zoneDepth: Float = 0.5
 
-        return SCNGeometry(sources: [vertexSource], elements: [element])
+        // Calculate the direction vector from start to end
+        let direction = (end - start).normalized()
+
+        // Calculate perpendicular vector (right-hand rule)
+        let perpendicular = SCNVector3(-direction.z, 0, direction.x).normalized() * zoneDepth
+
+        // Generate corners using the perpendicular vector
+        // Back corners are moved along the perpendicular vector
+        let backStart = start + perpendicular
+        let backEnd = end + perpendicular
+
+        // Store corners for visualization
+        let corners = [start, end, backEnd, backStart]
+        goalZones.append(GoalZone(start: start, end: end, width: zoneDepth, corners: corners))
+        print("Goal Zone defined with corners: \(corners)")
+
+        // Draw the goal zone for visual confirmation
+        drawGoalZone(corners: corners)
     }
+
+    private func drawGoalZone(corners: [SCNVector3]) {
+        // Calculate the length of the goal line and the width of the plane
+        let length = CGFloat((corners[1] - corners[0]).length())
+        let width = CGFloat((corners[2] - corners[1]).length())  // Assuming the second and third corners provide the width
+        let plane = SCNPlane(width: length, height: width)
+        plane.firstMaterial?.diffuse.contents = UIColor.red.withAlphaComponent(0.5)
+
+        let planeNode = SCNNode(geometry: plane)
+
+        // Compute the center of the plane based on the midpoints of the front and back edges
+        let frontMidpoint = SCNVector3.midpoint(between: corners[0], and: corners[1])
+        let backMidpoint = SCNVector3.midpoint(between: corners[2], and: corners[3])
+        planeNode.position = SCNVector3.midpoint(between: frontMidpoint, and: backMidpoint)
+
+        // Compute the angle to rotate the plane to align it with the goal line
+        let direction = (corners[1] - corners[0]).normalized()
+        let angle = atan2(direction.z, direction.x) - .pi / 2  // Rotate to align with the direction of the line
+
+        planeNode.eulerAngles = SCNVector3(0, angle, 0)  // Rotate around the Y-axis
+        planeNode.eulerAngles.x = -.pi / 2  // Rotate to lay flat
+
+        sceneView.scene.rootNode.addChildNode(planeNode)
+        print("Plane node added and aligned at position: \(planeNode.position), with rotation: \(planeNode.eulerAngles)")
+    }
+
+
+
+
+
+      private func createLineGeometry(from start: SCNVector3, to end: SCNVector3) -> SCNGeometry {
+          let vertices = [start, end]
+          let vertexSource = SCNGeometrySource(vertices: vertices)
+          let indices: [UInt16] = [0, 1]
+          let indexData = Data(bytes: indices, count: indices.count * MemoryLayout<UInt16>.size)
+          let element = SCNGeometryElement(data: indexData, primitiveType: .line, primitiveCount: 1, bytesPerIndex: MemoryLayout<UInt16>.size)
+          return SCNGeometry(sources: [vertexSource], elements: [element])
+      }
 
     private func addPreviewSphere(at position: SCNVector3) {
         let sphereGeometry = SCNSphere(radius: 0.01)
@@ -282,12 +340,11 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
 
             // Create or update the preview line
             if previewLineNode == nil {
-                previewLineNode = SCNNode(geometry: createLineGeometry(start: firstPoint, end: currentPoint))
+                previewLineNode = SCNNode(geometry: createLineGeometry(from: firstPoint, to: currentPoint))
                 previewLineNode?.geometry?.firstMaterial?.diffuse.contents = UIColor.yellow
                 sceneView.scene.rootNode.addChildNode(previewLineNode!)
             } else if let lineGeometry = previewLineNode?.geometry as? SCNGeometry {
-                // Update the preview line's geometry with the new endpoint
-                previewLineNode?.geometry = createLineGeometry(start: firstPoint, end: currentPoint)
+                previewLineNode?.geometry = createLineGeometry(from: firstPoint, to: currentPoint)
             }
         }
     }
@@ -330,45 +387,70 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
         }
     }
 
+    
     private func checkGoalCrossing(screenPoint: CGPoint) {
+        let now = Date()
+        
+        if let lastScoreTime = lastScoreTime, now.timeIntervalSince(lastScoreTime) < 3.0 {
+                   return  // Still within the cooldown period
+               }
+        
         let hitTestResults = sceneView.hitTest(screenPoint, types: .featurePoint)
-
+        let cooldownPeriod = 3.0
+       
         if let result = hitTestResults.first {
             let ballPosition = SCNVector3(
                 result.worldTransform.columns.3.x,
                 result.worldTransform.columns.3.y,
                 result.worldTransform.columns.3.z
             )
-            
-            for (index, line) in goalLines.enumerated() {
-                let (start, end) = line
-                let distanceToLine = distanceFromPointToLine(point: ballPosition, lineStart: start, lineEnd: end)
-                
-                // Debugging logs
-                print("Ball position: \(ballPosition), Start: \(start), End: \(end), Distance: \(distanceToLine)")
-                
-                if distanceToLine < 0.1 && ballBeyondLine(ball: ballPosition, lineStart: start, lineEnd: end) {
-                    // Award a point to the opposing team
+
+            // Enumerate through goalZones to have access to the index
+            for (index, zone) in goalZones.enumerated() {
+                let inZone = isPointInZone(point: ballPosition, zone: zone)
+
+                if inZone && !isBallInGoalZone[index] {
+                    // Ball has entered the zone and no previous score has been registered for this entry
                     let scoringTeam = (index == 0) ? 1 : 0
                     teamScores[scoringTeam] += 1
                     print("Goal scored for Team \(scoringTeam + 1)! Scores: \(teamScores)")
-                    
-                    // Update score label
                     updateScoreLabel(for: scoringTeam)
-                    
-                    // Add feedback
-                    addGoalFeedback(at: ballPosition)
-                    
-                    return // Exit after registering a goal
+                    isBallInGoalZone[index] = true  // Mark as scored
+                    }
+                else if !inZone{
+                    isBallInGoalZone[index] = false
                 }
             }
         }
     }
+
+    
+    private func isPointInZone(point: SCNVector3, zone: GoalZone) -> Bool {
+        // Calculate the vector of the goal zone
+        let direction = (zone.end - zone.start).normalized()
+        let perpendicular = SCNVector3(-direction.z, 0, direction.x) * zone.width
+        let zoneStart = zone.start + perpendicular
+        let zoneEnd = zone.end + perpendicular
+        
+        // Check if point is within the zone
+            let crossProd = direction.cross(point - zone.start)
+            let withinLength = point.projectedOntoLine(start: zone.start, end: zone.end)
+            let withinWidth = point.projectedOntoLine(start: zone.start, end: zoneStart)
+            
+            return withinLength && withinWidth
+        
+    }
+
     
     private func updateScoreLabel(for team: Int) {
         if let scoreLabel = view.subviews.compactMap({ $0 as? UILabel }).first(where: { $0.text?.contains("Team \(team + 1)") == true }) {
             scoreLabel.text = "Team \(team + 1): \(teamScores[team])"
         }
+    }
+    
+    private func updateScore(forTeam team: Int) {
+        teamScores[team] += 1
+        updateScoreLabel(for: team)
     }
 
     
@@ -384,18 +466,34 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
             node.removeFromParentNode()
         }
     }
+    
+    private func addDebugSphere(at position: SCNVector3, color: UIColor) {
+        let sphere = SCNSphere(radius: 0.05)
+        sphere.firstMaterial?.diffuse.contents = color
+        let node = SCNNode(geometry: sphere)
+        node.position = position
+        sceneView.scene.rootNode.addChildNode(node)
+        
+        // Remove the node after 1 second for clarity
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            node.removeFromParentNode()
+        }
+    }
 
 
 
     private func ballBeyondLine(ball: SCNVector3, lineStart: SCNVector3, lineEnd: SCNVector3) -> Bool {
-        let lineVector = lineEnd - lineStart // Vector representing the line
-        let ballVector = ball - lineStart   // Vector from the start of the line to the ball
-        
-        let projectionFactor = ballVector.dot(lineVector) / lineVector.lengthSquared()
-        
-        // Check if the ball is beyond the line segment
-        return projectionFactor > 1.0 || projectionFactor < 0.0
+        let lineVector = lineEnd - lineStart // Vector from start to end of line
+        let ballVector = ball - lineStart    // Vector from start of line to ball
+
+        // Cross product to determine the perpendicular vector to the plane defined by the line and origin
+        let crossProd = lineVector.cross(ballVector)
+
+        // Using the Z component to determine the direction of the cross product
+        // Assuming a top-down 2D view where a positive Z indicates crossing from left to right
+        return crossProd.z > 0
     }
+
 
 
     private func distanceFromPointToLine(point: SCNVector3, lineStart: SCNVector3, lineEnd: SCNVector3) -> Float {
@@ -411,6 +509,15 @@ class ARCameraViewController: UIViewController, ARSCNViewDelegate, ARSessionDele
 
 // MARK: - SCNVector3 Extension
 extension SCNVector3 {
+    
+    func cross(_ vector: SCNVector3) -> SCNVector3 {
+          let x = self.y * vector.z - self.z * vector.y
+          let y = self.z * vector.x - self.x * vector.z
+          let z = self.x * vector.y - self.y * vector.x
+          return SCNVector3(x: x, y: y, z: z)
+      }
+
+    
     static func - (left: SCNVector3, right: SCNVector3) -> SCNVector3 {
         return SCNVector3(left.x - right.x, left.y - right.y, left.z - right.z)
     }
@@ -420,18 +527,41 @@ extension SCNVector3 {
     }
 
     static func + (left: SCNVector3, right: SCNVector3) -> SCNVector3 {
-        return SCNVector3(left.x + right.x, left.y + right.y, left.z + right.z)
-    }
+            return SCNVector3(left.x + right.x, left.y + right.y, left.z + right.z)
+        }
+        
 
-    func dot(_ other: SCNVector3) -> Float {
-        return x * other.x + y * other.y + z * other.z
+    func dot(_ vector: SCNVector3) -> Float {
+        return (self.x * vector.x) + (self.y * vector.y) + (self.z * vector.z)
     }
 
     func length() -> Float {
-        return sqrt(x * x + y * y + z * z)
+        return sqrt(x*x + y*y + z*z)
     }
+
     
     func lengthSquared() -> Float {
         return x * x + y * y + z * z
     }
+    
+    func normalized() -> SCNVector3 {
+        let len = sqrt(x*x + y*y + z*z)
+        return SCNVector3(x/len, y/len, z/len)
+    }
+    
+    func projectedOntoLine(start: SCNVector3, end: SCNVector3) -> Bool {
+        let lineVec = end - start
+        let pointVec = self - start
+        let projected = pointVec.dot(lineVec.normalized())
+        let lineLength = (end - start).length()
+        return projected >= 0 && projected <= lineLength
+    }
+    
+    static func / (vector: SCNVector3, scalar: Float) -> SCNVector3 {
+            return SCNVector3(vector.x / scalar, vector.y / scalar, vector.z / scalar)
+        }
+    static func midpoint(between point1: SCNVector3, and point2: SCNVector3) -> SCNVector3 {
+           return (point1 + point2) / 2
+       }
+
 }
